@@ -1,70 +1,94 @@
 import streamlit as st
 import pandas as pd
 
-# ตั้งค่าหน้าเพจ
-st.set_page_config(page_title="Rik's Financial Toolkit", layout="centered")
+st.set_page_config(page_title="Rik's Financial Command Center", layout="wide")
 
-st.title("🚀 Rik's Debt Simulator")
-st.markdown("ระบบจำลองการปลดหนี้ฉบับ Ultimate Combo")
+# สร้าง Tabs สำหรับฟังก์ชันต่างๆ
+tab1, tab2, tab3 = st.tabs(["📊 ระบบจัดการหนี้", "🚗 คำนวณ Grab & LPG", "🛠️ ต้นทุนธุรกิจ Maker"])
 
-# เมนูด้านข้างสำหรับปรับตัวเลข
-st.sidebar.header("⚙️ ปรับแต่งแผนการเงิน")
-loan_amount = st.sidebar.number_input("ยอดหนี้ตั้งต้น (บาท)", value=1322000, step=10000)
-interest_rate = st.sidebar.number_input("ดอกเบี้ยเฉลี่ย (% ต่อปี)", value=3.5, step=0.1) / 100
-initial_pay = st.sidebar.number_input("ยอดผ่อนปีแรก (บาท/เดือน)", value=10000, step=500)
-step_up = st.sidebar.number_input("ยอดผ่อนเพิ่มขึ้น (บาท/ปี)", value=1000, step=500)
-bonus_pay = st.sidebar.number_input("โปะโบนัสปลายปี (บาท)", value=10000, step=1000)
+# --- Tab 1: ระบบจัดการหนี้ (Multi-Debt Manager) ---
+with tab1:
+    st.header("🏢 ระบบจัดการหนี้รายตัว")
+    st.info("ระบุชื่อหนี้ อัตราดอกเบี้ย และยอดผ่อนต่อเดือน เพื่อดูวันปลดหนี้")
 
-# ตัวแปรสำหรับคำนวณ
-balance = loan_amount
-months = 0
-total_interest = 0
-current_pay = initial_pay
-history = []
+    if 'debts' not in st.session_state:
+        st.session_state.debts = [
+            {"name": "บ้านออมสิน (รวมกู้เพิ่ม)", "balance": 1322000, "rate": 3.5, "pay": 10000}
+        ]
 
-# ลูปคำนวณลดต้นลดดอกแบบรายเดือน
-while balance > 0 and months < 360: # ป้องกันลูปเกิน 30 ปี
-    months += 1
+    # ฟอร์มเพิ่มหนี้ใหม่
+    with st.expander("➕ เพิ่มรายการหนี้ใหม่ (บัตร/แอป/ยืมคน)"):
+        with st.form("add_debt_form"):
+            new_name = st.text_input("ชื่อหนี้ (เช่น บัตรเครดิต A / หนี้เพื่อน)")
+            new_bal = st.number_input("ยอดหนี้คงเหลือ (บาท)", min_value=0, value=10000)
+            new_rate = st.number_input("ดอกเบี้ย (% ต่อปี)", min_value=0.0, value=15.0)
+            new_pay = st.number_input("ยอดผ่อนต่อเดือน (บาท)", min_value=1, value=1000)
+            if st.form_submit_button("บันทึกรายการหนี้"):
+                st.session_state.debts.append({"name": new_name, "balance": new_bal, "rate": new_rate, "pay": new_pay})
+                st.rerun()
+
+    # แสดงรายการและคำนวณ
+    if st.session_state.debts:
+        total_interest_all = 0
+        for i, debt in enumerate(st.session_state.debts):
+            with st.container():
+                st.subheader(f"🔹 {debt['name']}")
+                
+                # ตรรกะคำนวณรายตัว
+                bal = debt['balance']
+                rate = debt['rate'] / 100 / 12
+                pay = debt['pay']
+                m = 0
+                
+                while bal > 0 and m < 360:
+                    m += 1
+                    int_m = bal * rate
+                    bal = bal + int_m - pay
+                    if int_m >= pay: # กรณีผ่อนไม่พอดอกเบี้ย
+                        st.error(f"⚠️ ยอดผ่อนของ {debt['name']} น้อยกว่าดอกเบี้ย! หนี้จะไม่มีวันหมด")
+                        break
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("ยอดหนี้", f"{debt['balance']:,.0f} ฿")
+                col2.metric("ดอกเบี้ย", f"{debt['rate']}%")
+                col3.metric("เวลาที่ใช้จบหนี้", f"{m} เดือน" if bal <= 0 else "N/A")
+                
+                if st.button(f"🗑️ ลบรายการ {debt['name']}", key=f"del_{i}"):
+                    st.session_state.debts.pop(i)
+                    st.rerun()
+                st.divider()
+
+# --- Tab 2: Grab & LPG Tracker ---
+with tab2:
+    st.header("⛽ คำนวณกำไร Grab & ค่าแก๊ส")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        revenue = st.number_input("รายได้รวมวันนี้ (บาท)", min_value=0, value=1000)
+        distance = st.number_input("ระยะทางที่วิ่งรวม (กม.)", min_value=1, value=150)
+    with col_g2:
+        lpg_price = st.number_input("ราคา LPG (บาท/ลิตร)", value=15.5)
+        consumption = st.number_input("อัตรากินแก๊สรถ (กม./ลิตร)", value=13.0)
     
-    # ปรับยอดผ่อนสเต็ปอัปทุกๆ การขึ้นปีใหม่ (เดือนที่ 13, 25, 37...)
-    if months > 1 and (months - 1) % 12 == 0:
-        current_pay += step_up
-        
-    # คำนวณดอกเบี้ยรายเดือน
-    interest_month = balance * (interest_rate / 12)
-    total_interest += interest_month
+    gas_cost = (distance / consumption) * lpg_price
+    net_profit = revenue - gas_cost
     
-    # คำนวณเงินต้นที่ลดลง
-    principal_paid = current_pay - interest_month
+    st.subheader(f"💰 กำไรสุทธิวันนี้: {net_profit:,.2f} บาท")
+    st.write(f"📊 ต้นทุนค่าแก๊สเฉลี่ย: {gas_cost/distance:.2f} บาท/กม.")
+
+# --- Tab 3: ต้นทุนธุรกิจ Maker ---
+with tab3:
+    st.header("🖨️ คำนวณราคาขายงาน Maker")
+    m_col1, m_col2 = st.columns(2)
+    with m_col1:
+        weight = st.number_input("น้ำหนักชิ้นงาน (กรัม)", value=100)
+        filament_price = st.number_input("ราคาฟิลาเมนต์ (บาท/กก.)", value=500)
+    with m_col2:
+        print_time = st.number_input("เวลาที่ใช้พิมพ์ (ชม.)", value=5)
+        elec_hour = st.number_input("ค่าไฟ+ค่าเสื่อมเครื่อง (บาท/ชม.)", value=10)
     
-    # โปะโบนัสเพิ่มทุกๆ สิ้นปี (เดือนที่ 12, 24, 36...)
-    if months % 12 == 0:
-        principal_paid += bonus_pay
-        
-    # หักลบเงินต้นคงเหลือ
-    balance -= principal_paid
+    material_cost = (weight / 1000) * filament_price
+    total_cost = material_cost + (print_time * elec_hour)
     
-    if balance < 0:
-        balance = 0
-        
-    # บันทึกข้อมูลเพื่อพล็อตกราฟ
-    history.append({
-        "Month": months,
-        "Balance": balance,
-        "Monthly_Pay": current_pay
-    })
-
-# สรุปผลลัพธ์
-years_to_payoff = months / 12
-st.subheader("🎯 สรุปผลลัพธ์แผนนี้")
-col1, col2 = st.columns(2)
-col1.metric("ใช้เวลาผ่อนจบ", f"{years_to_payoff:.1f} ปี", f"{months} เดือน")
-col2.metric("เสียดอกเบี้ยรวมให้แบงก์", f"{total_interest:,.0f} บาท")
-
-# สร้าง DataFrame และพล็อตกราฟเงินต้นคงเหลือ
-df = pd.DataFrame(history)
-st.subheader("📉 กราฟจำลองยอดหนี้คงเหลือ")
-st.line_chart(df.set_index("Month")["Balance"])
-
-st.markdown("---")
-st.caption("พัฒนาด้วย Python & Streamlit")
+    st.subheader(f"🧾 ต้นทุนรวม: {total_cost:,.2f} บาท")
+    profit_margin = st.slider("กำไรที่ต้องการ (%)", 0, 300, 100)
+    st.success(f"💵 ราคาขายแนะนำ: {total_cost * (1 + profit_margin/100):,.0f} บาท")
