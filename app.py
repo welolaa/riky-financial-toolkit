@@ -1,94 +1,193 @@
 import streamlit as st
 import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime
 
-st.set_page_config(page_title="Rik's Financial Command Center", layout="wide")
+# --- 1. ตั้งค่าหน้าเว็บหลัก ---
+st.set_page_config(page_title="Rik's Finance App", layout="wide", page_icon="💡")
 
-# สร้าง Tabs สำหรับฟังก์ชันต่างๆ
-tab1, tab2, tab3 = st.tabs(["📊 ระบบจัดการหนี้", "🚗 คำนวณ Grab & LPG", "🛠️ ต้นทุนธุรกิจ Maker"])
-
-# --- Tab 1: ระบบจัดการหนี้ (Multi-Debt Manager) ---
-with tab1:
-    st.header("🏢 ระบบจัดการหนี้รายตัว")
-    st.info("ระบุชื่อหนี้ อัตราดอกเบี้ย และยอดผ่อนต่อเดือน เพื่อดูวันปลดหนี้")
-
-    if 'debts' not in st.session_state:
-        st.session_state.debts = [
-            {"name": "บ้านออมสิน (รวมกู้เพิ่ม)", "balance": 1322000, "rate": 3.5, "pay": 10000}
+# --- 2. ระบบหลังบ้าน: ฟังก์ชันเชื่อมต่อ Google Sheets ---
+@st.cache_resource # ให้ระบบจำการเชื่อมต่อไว้ จะได้ไม่หน่วงเวลาเปลี่ยนหน้า
+def init_connection():
+    try:
+        # ดึงกุญแจลับจาก Streamlit Secrets
+        key_dict = st.secrets["gcp_service_account"]
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
         ]
+        creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        # ⚠️ สำคัญ: เปลี่ยนชื่อ "Rik_Financial_App" ให้ตรงกับชื่อไฟล์ Google Sheets ของคุณริก
+        sheet = client.open("Rik_Financial_App") 
+        return sheet
+    except Exception as e:
+        st.error(f"❌ เชื่อมต่อ Google Sheets ไม่สำเร็จ กรุณาเช็กชื่อไฟล์หรือการตั้งค่า Secrets: {e}")
+        return None
 
-    # ฟอร์มเพิ่มหนี้ใหม่
-    with st.expander("➕ เพิ่มรายการหนี้ใหม่ (บัตร/แอป/ยืมคน)"):
-        with st.form("add_debt_form"):
-            new_name = st.text_input("ชื่อหนี้ (เช่น บัตรเครดิต A / หนี้เพื่อน)")
-            new_bal = st.number_input("ยอดหนี้คงเหลือ (บาท)", min_value=0, value=10000)
-            new_rate = st.number_input("ดอกเบี้ย (% ต่อปี)", min_value=0.0, value=15.0)
-            new_pay = st.number_input("ยอดผ่อนต่อเดือน (บาท)", min_value=1, value=1000)
-            if st.form_submit_button("บันทึกรายการหนี้"):
-                st.session_state.debts.append({"name": new_name, "balance": new_bal, "rate": new_rate, "pay": new_pay})
-                st.rerun()
+sheet = init_connection()
 
-    # แสดงรายการและคำนวณ
-    if st.session_state.debts:
-        total_interest_all = 0
-        for i, debt in enumerate(st.session_state.debts):
-            with st.container():
-                st.subheader(f"🔹 {debt['name']}")
-                
-                # ตรรกะคำนวณรายตัว
-                bal = debt['balance']
-                rate = debt['rate'] / 100 / 12
-                pay = debt['pay']
-                m = 0
-                
-                while bal > 0 and m < 360:
-                    m += 1
-                    int_m = bal * rate
-                    bal = bal + int_m - pay
-                    if int_m >= pay: # กรณีผ่อนไม่พอดอกเบี้ย
-                        st.error(f"⚠️ ยอดผ่อนของ {debt['name']} น้อยกว่าดอกเบี้ย! หนี้จะไม่มีวันหมด")
-                        break
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("ยอดหนี้", f"{debt['balance']:,.0f} ฿")
-                col2.metric("ดอกเบี้ย", f"{debt['rate']}%")
-                col3.metric("เวลาที่ใช้จบหนี้", f"{m} เดือน" if bal <= 0 else "N/A")
-                
-                if st.button(f"🗑️ ลบรายการ {debt['name']}", key=f"del_{i}"):
-                    st.session_state.debts.pop(i)
-                    st.rerun()
-                st.divider()
+# --- ฟังก์ชันช่วยสร้าง Worksheet อัตโนมัติถ้ายังไม่มี ---
+def get_worksheet(sheet_name, headers):
+    if sheet:
+        try:
+            ws = sheet.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            # ถ้าหาไม่เจอ ให้สร้างชีตใหม่และพิมพ์หัวตารางให้เลย
+            ws = sheet.add_worksheet(title=sheet_name, rows="100", cols="20")
+            ws.append_row(headers)
+        return ws
+    return None
 
-# --- Tab 2: Grab & LPG Tracker ---
+# --- 3. สร้างระบบแถบเมนู (Tabs) ---
+tab1, tab2, tab3, tab4 = st.tabs([
+    "💸 บันทึกรายจ่าย (วิก/เดือน)", 
+    "🏢 วางแผนปลดหนี้", 
+    "🚗 Grab & LPG", 
+    "🖨️ ต้นทุน Maker"
+])
+
+# ==========================================
+# TAB 1: บันทึกรายจ่าย (แบ่งวิก 15 วัน / รายเดือน)
+# ==========================================
+with tab1:
+    st.header("💸 บันทึกและสรุปรายจ่าย")
+    
+    # เชื่อมต่อกับชีตชื่อ Expenses
+    ws_expenses = get_worksheet("Expenses", ["Date", "Item", "Amount", "Category", "Period"])
+    
+    with st.expander("📝 ฟอร์มบันทึกรายจ่ายใหม่", expanded=True):
+        with st.form("expense_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                e_date = st.date_input("วันที่", datetime.today())
+                e_item = st.text_input("รายการ (เช่น ค่าอาหาร, ค่าบ้าน, ค่าเน็ต)")
+                e_amount = st.number_input("จำนวนเงิน (บาท)", min_value=0.0, step=50.0)
+            with col2:
+                e_category = st.selectbox("หมวดหมู่", ["อาหาร", "เดินทาง", "ที่อยู่อาศัย/หนี้", "จิปาถะ", "ธุรกิจส่วนตัว"])
+                
+                # ตรรกะช่วยเลือกวิกอัตโนมัติตามวันที่ (วันที่ 1-15 คือวิก 1)
+                day = e_date.day
+                default_period = "วิก 1 (วันที่ 1-15)" if day <= 15 else "วิก 2 (วันที่ 16-31)"
+                e_period = st.selectbox(
+                    "รอบบิลรายจ่าย", 
+                    ["วิก 1 (วันที่ 1-15)", "วิก 2 (วันที่ 16-31)", "รายจ่ายคงที่ (รายเดือน)"], 
+                    index=0 if day <= 15 else 1
+                )
+            
+            submit_expense = st.form_submit_button("💾 บันทึกลงฐานข้อมูล")
+            
+            if submit_expense:
+                if ws_expenses and e_item:
+                    ws_expenses.append_row([str(e_date), e_item, e_amount, e_category, e_period])
+                    st.success(f"บันทึก '{e_item}' จำนวน {e_amount} บาท ลงระบบเรียบร้อย!")
+                else:
+                    st.warning("กรุณากรอกชื่อรายการ หรือตรวจสอบการเชื่อมต่อ")
+
+    st.markdown("---")
+    st.subheader("📊 สรุปกระแสเงินสด (Coming Soon)")
+    st.info("เมื่อข้อมูลใน Google Sheets เริ่มเยอะขึ้น เราจะดึงข้อมูลมาทำกราฟสรุปแยกวิก 1 / วิก 2 ให้เห็นกระแสเงินสดชัดๆ ในอัปเดตเวอร์ชันหน้านะครับ!")
+
+# ==========================================
+# TAB 2: วางแผนปลดหนี้ (Ultimate Combo)
+# ==========================================
 with tab2:
-    st.header("⛽ คำนวณกำไร Grab & ค่าแก๊ส")
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        revenue = st.number_input("รายได้รวมวันนี้ (บาท)", min_value=0, value=1000)
-        distance = st.number_input("ระยะทางที่วิ่งรวม (กม.)", min_value=1, value=150)
-    with col_g2:
-        lpg_price = st.number_input("ราคา LPG (บาท/ลิตร)", value=15.5)
-        consumption = st.number_input("อัตรากินแก๊สรถ (กม./ลิตร)", value=13.0)
+    st.header("🏢 เครื่องจำลองการปลดหนี้")
+    st.markdown("ระบบจำลองลดต้นลดดอก เมื่อใช้กลยุทธ์ **Step-up (เพิ่มยอดรายปี)** และ **โปะโบนัสสิ้นปี**")
     
-    gas_cost = (distance / consumption) * lpg_price
-    net_profit = revenue - gas_cost
-    
-    st.subheader(f"💰 กำไรสุทธิวันนี้: {net_profit:,.2f} บาท")
-    st.write(f"📊 ต้นทุนค่าแก๊สเฉลี่ย: {gas_cost/distance:.2f} บาท/กม.")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        loan_amt = st.number_input("ยอดหนี้ตั้งต้น (บาท)", value=1322000, step=10000)
+        interest_rate = st.number_input("ดอกเบี้ยเฉลี่ย (% ต่อปี)", value=3.5, step=0.1) / 100
+    with col_d2:
+        base_pay = st.number_input("ยอดผ่อนฐานปีแรก (บาท/เดือน)", value=10000, step=1000)
+        step_up = st.number_input("เพิ่มยอดผ่อนทุกๆ ปี (บาท/ปี)", value=2000, step=1000)
+        bonus_pay = st.number_input("โปะโบนัสปลายปี (บาท)", value=50000, step=5000)
+        
+    if st.button("🚀 คำนวณความเร็วปลดหนี้"):
+        bal = loan_amt
+        months = 0
+        total_int = 0
+        current_pay = base_pay
+        
+        while bal > 0 and months < 360: # ป้องกันลูปค้าง (30 ปี)
+            months += 1
+            
+            # ขึ้นปีใหม่ (ทุกๆ 12 เดือน) อัดยอดผ่อนเพิ่ม
+            if months > 1 and (months - 1) % 12 == 0:
+                current_pay += step_up 
+                
+            int_m = bal * (interest_rate / 12)
+            total_int += int_m
+            principal_paid = current_pay - int_m
+            
+            # สิ้นปี อัดโบนัสโปะ
+            if months % 12 == 0:
+                principal_paid += bonus_pay 
+                
+            bal -= principal_paid
+            
+        st.success(f"🎉 โหดมาก! คุณจะปลดหนี้ก้อนนี้หมดเกลี้ยงในเวลาแค่ **{months/12:.1f} ปี** (หรือ {months} เดือน)")
+        st.write(f"💸 เสียดอกเบี้ยรวมให้ธนาคารแค่: **{total_int:,.0f} บาท**")
 
-# --- Tab 3: ต้นทุนธุรกิจ Maker ---
+# ==========================================
+# TAB 3: Grab & LPG Tracker
+# ==========================================
 with tab3:
-    st.header("🖨️ คำนวณราคาขายงาน Maker")
+    st.header("🚗 บันทึกกำไรวิ่งรอบ & คุมต้นทุนแก๊ส LPG")
+    
+    # เชื่อมต่อกับชีตชื่อ Grab_LPG
+    ws_grab = get_worksheet("Grab_LPG", ["Date", "Revenue", "Distance", "LPG_Cost", "Net_Profit", "Cost_Per_Km"])
+    
+    with st.form("grab_form", clear_on_submit=True):
+        g_date = st.date_input("วันที่วิ่งงาน", datetime.today())
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            g_revenue = st.number_input("รายได้ Grab วันนี้ (บาท)", min_value=0.0, value=1500.0)
+            g_distance = st.number_input("ระยะทางที่ขับรวม (กม.)", min_value=1.0, value=150.0)
+        with col_g2:
+            lpg_price = st.number_input("ราคาแก๊ส LPG ปั๊ม PT (บาท/ลิตร)", value=15.5)
+            lpg_km_l = st.number_input("อัตรากินแก๊สของรถ (กม./ลิตร)", value=13.0)
+            
+        g_submit = st.form_submit_button("คำนวณกำไร & บันทึก")
+        
+        if g_submit:
+            lpg_cost = (g_distance / lpg_km_l) * lpg_price
+            net_profit = g_revenue - lpg_cost
+            cost_per_km = lpg_cost / g_distance
+            
+            st.success(f"💰 กำไรสุทธิเข้ากระเป๋าวันนี้: **{net_profit:,.0f} บาท**")
+            
+            # เช็กสุขภาพรถ
+            if cost_per_km > 1.5:
+                st.error(f"⚠️ ต้นทุนแก๊ส: {cost_per_km:.2f} บาท/กม. (เริ่มกินแก๊สผิดปกติ ควรเช็กระบบ)")
+            else:
+                st.info(f"✅ ต้นทุนแก๊สปกติ: **{cost_per_km:.2f} บาท/กม.**")
+            
+            if ws_grab:
+                ws_grab.append_row([str(g_date), g_revenue, g_distance, lpg_cost, net_profit, cost_per_km])
+
+# ==========================================
+# TAB 4: ต้นทุนธุรกิจ Maker 
+# ==========================================
+with tab4:
+    st.header("🖨️ คำนวณราคาขายงานผลิต (3D Print / Laser)")
+    
     m_col1, m_col2 = st.columns(2)
     with m_col1:
-        weight = st.number_input("น้ำหนักชิ้นงาน (กรัม)", value=100)
-        filament_price = st.number_input("ราคาฟิลาเมนต์ (บาท/กก.)", value=500)
+        weight = st.number_input("น้ำหนักพลาสติกที่ใช้ (กรัม)", value=150.0)
+        filament_price = st.number_input("ราคาพลาสติกม้วนละ (บาท/กก.)", value=500.0)
     with m_col2:
-        print_time = st.number_input("เวลาที่ใช้พิมพ์ (ชม.)", value=5)
-        elec_hour = st.number_input("ค่าไฟ+ค่าเสื่อมเครื่อง (บาท/ชม.)", value=10)
+        print_time = st.number_input("เวลาที่เครื่องทำงาน (ชม.)", value=8.0)
+        elec_hour = st.number_input("ค่าไฟ+ค่าสึกหรอเครื่อง (บาท/ชม.)", value=15.0)
     
     material_cost = (weight / 1000) * filament_price
     total_cost = material_cost + (print_time * elec_hour)
     
-    st.subheader(f"🧾 ต้นทุนรวม: {total_cost:,.2f} บาท")
-    profit_margin = st.slider("กำไรที่ต้องการ (%)", 0, 300, 100)
-    st.success(f"💵 ราคาขายแนะนำ: {total_cost * (1 + profit_margin/100):,.0f} บาท")
+    st.write(f"🧾 **ต้นทุนที่แท้จริง:** {total_cost:,.0f} บาท")
+    profit_margin = st.slider("มาร์จิ้นกำไรที่ต้องการ (%)", 0, 300, 100)
+    
+    final_price = total_cost * (1 + profit_margin/100)
+    st.success(f"💵 **ราคาประเมินให้ลูกค้า:** {final_price:,.0f} บาท")
