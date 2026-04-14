@@ -10,7 +10,7 @@ import io
 # ==========================================
 # ⚙️ ตั้งค่าระบบ (คุณริกแก้ตรงนี้ 2 จุดนะครับ!)
 # ==========================================
-SHEET_NAME = "Rik_Financial_App" # ชื่อไฟล์ Google Sheets ของคุณริก
+SHEET_NAME = "Rik_Finance_Receipts" # ชื่อไฟล์ Google Sheets ของคุณริก
 DRIVE_FOLDER_ID = "https://drive.google.com/drive/folders/1z6AK_cQKN5P1Ue9-BNR_2eUXa_teNX5j" # <--- เอา ID โฟลเดอร์มาใส่ตรงนี้
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
