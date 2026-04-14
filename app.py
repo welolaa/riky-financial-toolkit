@@ -126,13 +126,67 @@ with tab3:
         st.dataframe(my_fixed[['Item', 'Amount', 'Current_Month', 'Total_Months', 'Type', 'Status']])
         
         st.divider()
-        st.subheader("ยืนยันการจ่ายเงิน (แนบสลิป)")
+        st.subheader("ยืนยันการจ่ายเงิน")
         unpaid_list = my_fixed[my_fixed['Status'] != 'จ่ายแล้ว']['Item'].tolist()
+        
         if unpaid_list:
+            # 1. เลือกรายการ
             pay_item = st.selectbox("เลือกรายการที่จะแจ้งจ่าย", unpaid_list)
-            pay_file = st.file_uploader(f"อัปโหลดสลิปสำหรับ {pay_item}", type=['png', 'jpg', 'jpeg'])
-            if st.button("ยืนยันการโอนเงิน"):
-                # ที่นี่คุณริกสามารถเพิ่ม Code เพื่อไป Update สถานะใน Sheets เป็น 'จ่ายแล้ว' ได้ครับ
-                st.info("กำลังพัฒนาส่วนการ Update สถานะลง Sheets โดยตรง...")
+            # 2. ช่องอัปโหลดสลิป (ไม่บังคับ)
+            st.caption("อัปโหลดสลิป (ไม่บังคับ - ข้ามได้ถ้าจ่ายด้วยเงินสดหรือไม่ได้เซฟสลิปไว้)")
+            pay_file = st.file_uploader(f"แนบสลิปสำหรับ {pay_item}", type=['png', 'jpg', 'jpeg'])
+            
+            # 3. ปุ่มกดจ่าย
+            if st.button(f"✅ ยืนยันว่าจ่าย '{pay_item}' แล้ว"):
+                with st.spinner("กำลังบันทึกข้อมูล..."):
+                    # ----- ส่วนอัปโหลดสลิป (ถ้ามี) -----
+                    slip_url = ""
+                    if pay_file:
+                        main_id = get_or_create_folder("Rik_Finance_Receipts")
+                        # ตั้งชื่อไฟล์ให้ตรงกับหนี้ เพื่อง่ายต่อการค้นหา
+                        today_str = datetime.today().strftime('%Y-%m-%d')
+                        file_name = f"{today_str}_{pay_item}.png"
+                        
+                        media = MediaIoBaseUpload(io.BytesIO(pay_file.read()), mimetype='image/png')
+                        file = drive_service.files().create(
+                            body={'name': file_name, 'parents': [main_id]}, 
+                            media_body=media, 
+                            fields='webViewLink'
+                        ).execute()
+                        slip_url = file.get('webViewLink')
+
+                    # ----- ส่วนอัปเดต Google Sheets -----
+                    # หาบรรทัด (Row) ของรายการนี้ เพื่อไปอัปเดต
+                    cell = ws_fixed.find(pay_item, in_column=2) # ค้นหาในคอลัมน์ Item (คอลัมน์ที่ 2)
+                    if cell:
+                        row_index = cell.row
+                        
+                        # ดึงค่าเก่ามาเพื่อคำนวณงวด
+                        current_month = int(ws_fixed.cell(row_index, 4).value or 0)
+                        total_months = int(ws_fixed.cell(row_index, 5).value or 0)
+                        item_type = ws_fixed.cell(row_index, 6).value
+                        
+                        # บวกงวดเพิ่ม 1
+                        new_current_month = current_month + 1
+                        
+                        # อัปเดตสถานะและงวด
+                        ws_fixed.update_cell(row_index, 4, new_current_month)
+                        ws_fixed.update_cell(row_index, 7, "จ่ายแล้ว")
+                        
+                        # ถ้ามีสลิป ก็อัปเดตลิงก์ลงไปด้วย (อยู่คอลัมน์ที่ 8 - ต้องเพิ่มหัวคอลัมน์ Slip_Link ไว้ด้วยนะ)
+                        if slip_url:
+                            ws_fixed.update_cell(row_index, 8, slip_url)
+
+                        # เช็กเงื่อนไขปิดยอด
+                        if item_type == "หนี้สิน (มีงวดผ่อน)" and new_current_month >= total_months:
+                            st.balloons() # ฉลองปิดยอด!
+                            st.success(f"🎉 ยินดีด้วย! คุณผ่อน '{pay_item}' ครบทุกงวดแล้ว!")
+                        else:
+                            st.success(f"บันทึกการจ่าย '{pay_item}' งวดที่ {new_current_month} เรียบร้อย!")
+                        
+                        st.rerun() # รีเฟรชหน้าเพื่ออัปเดตตาราง
+                    else:
+                        st.error("ไม่พบรายการนี้ในระบบ")
         else:
-            st.success("คุณจ่ายครบทุกรายการของเดือนนี้แล้ว!")
+            st.success("คุณจ่ายครบทุกรายการของเดือนนี้แล้ว! ")
+
