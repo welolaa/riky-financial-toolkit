@@ -5,13 +5,14 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.errors import HttpError
 import io
 
 # ==========================================
-# ⚙️ ตั้งค่าระบบ (คุณริกแก้ตรงนี้ 2 จุดนะครับ!)
+# ⚙️ ส่วนตั้งค่า (คุณริกแก้ 2 จุดนี้ให้ตรงครับ)
 # ==========================================
-SHEET_NAME = "Rik_Finance_Receipts" # ชื่อไฟล์ Google Sheets ของคุณริก
-DRIVE_FOLDER_ID = "1z6AK_cQKN5P1Ue9-BNR_2eUXa_teNX5j" # <--- เอา ID โฟลเดอร์มาใส่ตรงนี้
+SHEET_NAME = "Rik_Financial_App" 
+DRIVE_FOLDER_ID = "1z6AK_cQKN5P1Ue9-BNR_2eUXa_teNX5j" # ก๊อปปี้จาก URL โฟลเดอร์ใน Drive
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
 st.set_page_config(page_title="Rik & Mom Finance", layout="wide")
@@ -31,7 +32,7 @@ if st.session_state['user'] is None:
     st.stop()
 
 current_user = st.session_state['user']
-st.sidebar.title(f"👤 {current_user}")
+st.sidebar.title(f"👤 ผู้ใช้: {current_user}")
 if st.sidebar.button("Log out"):
     st.session_state['user'] = None
     st.rerun()
@@ -48,7 +49,7 @@ def init_services():
         sh = sheet_client.open(SHEET_NAME) 
         return sh, drive_service
     except Exception as e:
-        st.error(f"การเชื่อมต่อผิดพลาด: {e}")
+        st.error(f"🚨 การเชื่อมต่อ Google ผิดพลาด: {e}")
         return None, None
 
 sh, drive_service = init_services()
@@ -65,12 +66,13 @@ ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current_Month", 
 ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "Slip_Link", "Note"])
 
 # ==========================================
-# ส่วนการแสดงผล
+# ส่วนการแสดงผลหลัก
 # ==========================================
 st.title(f"💰 Rik & Mom Financial System")
 
-tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายวัน/รายรับ", "⚙️ ตั้งค่ารายจ่ายประจำ/หนี้", "📅 ติ๊กจ่าย & ตรวจสอบสลิป"])
+tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายวัน", "⚙️ ตั้งค่ารายจ่ายประจำ", "📅 ติ๊กจ่าย & ตรวจสอบ"])
 
+# --- TAB 1: บันทึกรายวัน ---
 with tab1:
     st.subheader("บันทึกรายรับ-รายจ่ายทั่วไป")
     with st.form("daily_form", clear_on_submit=True):
@@ -78,89 +80,92 @@ with tab1:
         with col1:
             d_date = st.date_input("วันที่", datetime.today())
             d_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่ายทั่วไป"])
-            d_item = st.text_input("ชื่อรายการ (เช่น เติมแก๊ส, ซื้อของ)")
+            d_item = st.text_input("ชื่อรายการ")
         with col2:
             d_amt = st.number_input("จำนวนเงิน (บาท)", min_value=0.0)
             d_file = st.file_uploader("แนบสลิป (ถ้ามี)", type=['png', 'jpg', 'jpeg'])
-        
         d_note = st.text_input("บันทึกเพิ่มเติม")
+        
         if st.form_submit_button("บันทึกลงระบบ"):
             slip_url = ""
             if d_file:
-                file_name = f"{d_date}_{d_item}.png"
-                media = MediaIoBaseUpload(io.BytesIO(d_file.read()), mimetype=d_file.type)
-                file = drive_service.files().create(body={'name': file_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
-                slip_url = file.get('webViewLink')
+                try:
+                    file_name = f"{d_date}_{d_item}.png"
+                    media = MediaIoBaseUpload(io.BytesIO(d_file.read()), mimetype=d_file.type)
+                    file = drive_service.files().create(body={'name': file_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
+                    slip_url = file.get('webViewLink')
+                except Exception as e:
+                    st.error(f"🚨 อัปโหลดสลิปไม่สำเร็จ: {e}")
             
             ws_daily.append_row([current_user, str(d_date), d_type, d_item, d_amt, slip_url, d_note])
             st.success("บันทึกเรียบร้อย!")
 
+# --- TAB 2: ตั้งค่ารายจ่ายประจำ ---
 with tab2:
-    st.subheader("เพิ่มรายการรายจ่ายประจำเดือน หรือ หนี้ระยะยาว")
-    with st.form("fixed_setting_form", clear_on_submit=True):
-        f_item = st.text_input("ชื่อรายการ (เช่น ค่าบ้าน, ค่ารถ, ค่าเน็ต)")
-        f_amt = st.number_input("ยอดที่ต้องจ่ายต่อเดือน", min_value=0.0)
-        f_type = st.radio("ประเภทรายการ", ["รายจ่ายประจำ (จ่ายตลอด)", "หนี้สิน (มีงวดผ่อน)"])
-        f_total = 0
-        if f_type == "หนี้สิน (มีงวดผ่อน)":
-            f_total = st.number_input("จำนวนงวดทั้งหมด", min_value=1, value=12)
+    st.subheader("เพิ่มรายการรายจ่ายประจำเดือน / หนี้")
+    with st.form("fixed_form", clear_on_submit=True):
+        f_item = st.text_input("ชื่อรายการ (เช่น ค่าบ้าน, ค่าเน็ต)")
+        f_amt = st.number_input("ยอดจ่ายต่อเดือน", min_value=0.0)
+        f_type = st.radio("ประเภท", ["รายจ่ายประจำ", "หนี้สิน (มีงวดผ่อน)"])
+        f_total = st.number_input("จำนวนงวดทั้งหมด (ถ้ามี)", min_value=0, value=0)
         
-        if st.form_submit_button("บันทึกรายการประจำ"):
+        if st.form_submit_button("เพิ่มรายการ"):
             ws_fixed.append_row([current_user, f_item, f_amt, 0, f_total, f_type, "ยังไม่จ่าย", "", ""])
-            st.success(f"เพิ่มรายการ '{f_item}' เข้าสู่ระบบแล้ว")
+            st.success("เพิ่มรายการสำเร็จ!")
+            st.cache_data.clear()
 
+# --- TAB 3: ติ๊กจ่ายเงิน ---
 with tab3:
-    st.subheader("รายการที่ต้องจ่าย/ตรวจสอบเดือนนี้")
-    
+    st.subheader("รายการที่ต้องจัดการเดือนนี้")
     fixed_data = pd.DataFrame(ws_fixed.get_all_records())
+    
     if not fixed_data.empty:
         my_fixed = fixed_data[fixed_data['User'] == current_user]
-        st.write("### ตารางรายจ่ายประจำเดือนของคุณ")
-        st.dataframe(my_fixed[['Item', 'Amount', 'Current_Month', 'Total_Months', 'Type', 'Status']])
+        st.dataframe(my_fixed[['Item', 'Amount', 'Current_Month', 'Total_Months', 'Status']])
         
         st.divider()
-        st.subheader("ยืนยันการจ่ายเงิน")
-        unpaid_list = my_fixed[my_fixed['Status'] != 'จ่ายแล้ว']['Item'].tolist()
+        unpaid = my_fixed[my_fixed['Status'] != 'จ่ายแล้ว']['Item'].tolist()
         
-        if unpaid_list:
-            pay_item = st.selectbox("เลือกรายการที่จะแจ้งจ่าย", unpaid_list)
-            st.caption("อัปโหลดสลิป (ไม่บังคับ - ข้ามได้ถ้าจ่ายด้วยเงินสด)")
-            pay_file = st.file_uploader(f"แนบสลิปสำหรับ {pay_item}", type=['png', 'jpg', 'jpeg'])
+        if unpaid:
+            pay_item = st.selectbox("เลือกรายการที่จะจ่าย", unpaid)
+            pay_file = st.file_uploader(f"แนบสลิปสำหรับ {pay_item} (ข้ามได้)", type=['png', 'jpg', 'jpeg'])
             
-            if st.button(f"✅ ยืนยันว่าจ่าย '{pay_item}' แล้ว"):
+            if st.button(f"✅ ยืนยันการจ่าย {pay_item}"):
                 with st.spinner("กำลังอัปเดตระบบ..."):
                     slip_url = ""
+                    # 1. จัดการไฟล์ใน Drive (ถ้ามี)
                     if pay_file:
-                        today_str = datetime.today().strftime('%Y-%m-%d')
-                        file_name = f"{today_str}_{pay_item}.png"
-                        media = MediaIoBaseUpload(io.BytesIO(pay_file.read()), mimetype=pay_file.type)
-                        file = drive_service.files().create(body={'name': file_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
-                        slip_url = file.get('webViewLink')
-
-                    cell = ws_fixed.find(pay_item, in_column=2)
-                    if cell:
-                        row_index = cell.row
-                        current_month = int(ws_fixed.cell(row_index, 4).value or 0)
-                        total_months = int(ws_fixed.cell(row_index, 5).value or 0)
-                        item_type = ws_fixed.cell(row_index, 6).value
-                        
-                        new_current_month = current_month + 1
-                        ws_fixed.update_cell(row_index, 4, new_current_month)
-                        ws_fixed.update_cell(row_index, 7, "จ่ายแล้ว")
-                        
-                        if slip_url:
-                            ws_fixed.update_cell(row_index, 8, slip_url)
-
-                        if item_type == "หนี้สิน (มีงวดผ่อน)" and new_current_month >= total_months:
-                            st.balloons()
-                            st.success(f"🎉 ยินดีด้วย! คุณผ่อน '{pay_item}' ครบทุกงวดแล้ว!")
-                        else:
-                            st.success(f"บันทึกการจ่าย '{pay_item}' งวดที่ {new_current_month} เรียบร้อย!")
-                        
-                        # เคลียร์ Cache และรีเฟรช
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error("ไม่พบรายการนี้ในระบบ")
+                        try:
+                            t_str = datetime.today().strftime('%Y-%m-%d')
+                            f_name = f"{t_str}_{pay_item}.png"
+                            media = MediaIoBaseUpload(io.BytesIO(pay_file.read()), mimetype=pay_file.type)
+                            up_file = drive_service.files().create(body={'name': f_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
+                            slip_url = up_file.get('webViewLink')
+                        except HttpError as he:
+                            st.error(f"🚨 Google Drive Error: {he.content.decode('utf-8')}")
+                            st.stop()
+                    
+                    # 2. อัปเดต Google Sheets
+                    try:
+                        cell = ws_fixed.find(pay_item, in_column=2)
+                        if cell:
+                            r = cell.row
+                            curr = int(ws_fixed.cell(r, 4).value or 0)
+                            tot = int(ws_fixed.cell(r, 5).value or 0)
+                            
+                            new_curr = curr + 1
+                            ws_fixed.update_cell(r, 4, new_curr) # อัปเดตงวด
+                            ws_fixed.update_cell(r, 7, "จ่ายแล้ว") # อัปเดตสถานะ
+                            if slip_url: ws_fixed.update_cell(r, 8, slip_url) # บันทึกลิงก์
+                            
+                            st.success(f"บันทึกการจ่าย '{pay_item}' งวดที่ {new_curr} สำเร็จ!")
+                            if tot > 0 and new_curr >= tot:
+                                st.balloons()
+                                st.success("🎉 ปิดยอดหนี้รายการนี้เรียบร้อย!")
+                            
+                            st.cache_data.clear()
+                            st.rerun()
+                    except Exception as ex:
+                        st.error(f"🚨 อัปเดต Sheets ผิดพลาด: {ex}")
         else:
-            st.success("คุณจ่ายครบทุกรายการของเดือนนี้แล้ว! ☕")
+            st.success("จ่ายครบหมดแล้วสำหรับเดือนนี้! ✨")
