@@ -29,26 +29,21 @@ if st.session_state['user'] is None:
     st.stop()
 
 current_user = st.session_state['user']
-st.sidebar.title(f"👤 ผู้ใช้: {current_user}")
+st.sidebar.title(f"👤 {current_user}")
 if st.sidebar.button("Log out"):
     st.session_state['user'] = None
     st.rerun()
 
-# --- 3. เชื่อมต่อ Google Services (Sheets & Drive) ---
+# --- 3. เชื่อมต่อ Google Services ---
 @st.cache_resource
 def init_services():
     try:
         key_dict = st.secrets["gcp_service_account"]
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
         sheet_client = gspread.authorize(creds)
         drive_service = build('drive', 'v3', credentials=creds)
-        
-        # เชื่อมไฟล์ (แก้ชื่อไฟล์ให้ตรงกับคุณริก)
-        sh = sheet_client.open("Rik_Financial_App") 
+        sh = sheet_client.open("Rik_Financial_App") # แก้ให้ตรงกับชื่อไฟล์จริง
         return sh, drive_service
     except Exception as e:
         st.error(f"การเชื่อมต่อผิดพลาด: {e}")
@@ -56,83 +51,92 @@ def init_services():
 
 sh, drive_service = init_services()
 
-# --- 4. ฟังก์ชันจัดการข้อมูล ---
+# --- 4. ฟังก์ชันจัดการโฟลเดอร์ Drive ---
+def get_or_create_folder(folder_name, parent_id=None):
+    query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    if parent_id: query += f" and '{parent_id}' in parents"
+    results = drive_service.files().list(q=query, fields="files(id)").execute()
+    items = results.get('files', [])
+    if not items:
+        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id] if parent_id else []}
+        folder = drive_service.files().create(body=file_metadata, fields='id').execute()
+        return folder.get('id')
+    return items[0].get('id')
+
+# --- 5. จัดการ Worksheet ---
 def get_ws(name, headers):
-    try:
-        return sh.worksheet(name)
+    try: return sh.worksheet(name)
     except:
         ws = sh.add_worksheet(title=name, rows="100", cols="10")
         ws.append_row(headers)
         return ws
 
-ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current_Installment", "Total_Installments", "Is_LongTerm", "Status", "Note"])
+ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current", "Total", "Type", "Status", "Slip_Link"])
 ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "Slip_Link", "Note"])
 
 # ==========================================
-# หน้าตาโปรแกรมหลัก
+# ส่วนการแสดงผล
 # ==========================================
+st.header(f"💰 ระบบบันทึกรายจ่าย ({current_user})")
 
-if current_user == "Mom":
-    st.header("🚗 ระบบของคุณแม่ (Grab & LPG)")
-    # ดึง Tab Grab & LPG มาไว้ที่นี่ (จากโค้ดเดิมของคุณริก)
-    st.info("ระบบ Grab & LPG ถูกย้ายมาให้คุณแม่จัดการที่นี่แล้วครับ")
+tab1, tab2 = st.tabs(["📝 บันทึกใหม่/จ่ายหนี้", "📅 ประวัติและตรวจสอบสลิป"])
 
-st.header(f"💰 ระบบจัดการเงิน ({current_user})")
+with tab1:
+    col_input, col_pay = st.columns(2)
+    
+    with col_input:
+        st.subheader("บันทึกรายวัน/รายรับ")
+        with st.form("daily_form", clear_on_submit=True):
+            d_date = st.date_input("วันที่", datetime.today())
+            d_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่ายทั่วไป"])
+            d_item = st.text_input("รายการ")
+            d_amt = st.number_input("จำนวนเงิน", min_value=0.0)
+            d_note = st.text_input("Note")
+            d_file = st.file_uploader("แนบสลิป", type=['png', 'jpg', 'jpeg'])
+            if st.form_submit_button("บันทึก"):
+                slip_url = ""
+                if d_file:
+                    main_id = get_or_create_folder("Rik_Finance_Receipts")
+                    sub_id = get_or_create_folder(d_item, parent_id=main_id)
+                    media = MediaIoBaseUpload(io.BytesIO(d_file.read()), mimetype='image/png')
+                    file = drive_service.files().create(body={'name': f"{d_date}_{d_item}.png", 'parents': [sub_id]}, media_body=media, fields='webViewLink').execute()
+                    slip_url = file.get('webViewLink')
+                ws_daily.append_row([current_user, str(d_date), d_type, d_item, d_amt, slip_url, d_note])
+                st.success("บันทึกสำเร็จ!")
 
-# Tab การทำงาน
-t1, t2, t3 = st.tabs(["📊 บันทึกประจำวัน", "📅 รายจ่ายฟิกซ์/หนี้", "📈 สรุปผล"])
+    with col_pay:
+        st.subheader("ชำระรายจ่ายฟิกซ์/หนี้")
+        df_fixed = pd.DataFrame(ws_fixed.get_all_records())
+        if not df_fixed.empty:
+            my_fixed = df_fixed[df_fixed['User'] == current_user]
+            unpaid = my_fixed[my_fixed['Status'] != 'จ่ายแล้ว']
+            if not unpaid.empty:
+                selected_item = st.selectbox("เลือกรายการที่จะจ่าย", unpaid['Item'])
+                p_file = st.file_uploader(f"อัปโหลดสลิปสำหรับ: {selected_item}", type=['png', 'jpg', 'jpeg'])
+                if st.button("ยืนยันการจ่าย"):
+                    # Logic: อัปเดตลิงก์สลิปและสถานะใน Sheets
+                    st.info("ระบบกำลังอัปโหลดและอัปเดตสถานะ...")
+            else:
+                st.write("✅ จ่ายครบทุกรายการแล้ว!")
 
-with t1:
-    st.subheader("บันทึกรายรับ-รายจ่ายรายวัน")
-    with st.form("daily_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            rec_date = st.date_input("วันที่", datetime.today())
-            rec_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่าย"])
-            rec_item = st.text_input("ชื่อรายการ (เช่น ค่าอาหาร, เงินเดือน)")
-        with col2:
-            rec_amount = st.number_input("จำนวนเงิน", min_value=0.0)
-            rec_note = st.text_input("บันทึกช่วยจำ (Note)")
-            uploaded_file = st.file_uploader("แนบสลิป (ส่งเข้า Google Drive)", type=['png', 'jpg', 'jpeg', 'pdf'])
+with tab2:
+    st.subheader("ตรวจสอบข้อมูลรายเดือน")
+    view_month = st.selectbox("เลือกเดือน", ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"], index=datetime.today().month-1)
+    
+    records = pd.DataFrame(ws_daily.get_all_records())
+    if not records.empty:
+        # กรองข้อมูลตาม User
+        user_records = records[records['User'] == current_user]
         
-        if st.form_submit_button("บันทึกข้อมูล"):
-            slip_url = "ไม่มีสลิป"
-            if uploaded_file and drive_service:
-                # อัปโหลดไฟล์ไปที่ Drive
-                file_metadata = {'name': f"Slip_{rec_item}_{rec_date}.png"}
-                media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype='image/png')
-                file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-                slip_url = file.get('webViewLink')
-            
-            ws_daily.append_row([current_user, str(rec_date), rec_type, rec_item, rec_amount, slip_url, rec_note])
-            st.success("บันทึกเรียบร้อย!")
-
-with t2:
-    st.subheader("ตารางรายจ่ายประจำเดือน & หนี้")
-    # ส่วนเพิ่มรายจ่ายฟิกซ์ใหม่
-    with st.expander("➕ เพิ่มรายจ่ายประจำเดือน/หนี้ใหม่"):
-        with st.form("fixed_form"):
-            f_item = st.text_input("ชื่อหนี้/รายจ่ายฟิกซ์")
-            f_amt = st.number_input("ยอดจ่ายต่อเดือน", min_value=0.0)
-            is_lt = st.checkbox("หนี้ระยะยาว (ไม่มีกำหนดงวด)")
-            total_inst = st.number_input("จำนวนงวดทั้งหมด (ถ้าไม่ใช่หนี้ระยะยาว)", min_value=0, value=12)
-            if st.form_submit_button("เพิ่มเข้าระบบ"):
-                ws_fixed.append_row([current_user, f_item, f_amt, 0, total_inst, str(is_lt), "ยังไม่จ่าย", ""])
-                st.success("เพิ่มรายจ่ายฟิกซ์แล้ว")
-
-    # แสดงตารางแบบ Excel
-    df_fixed = pd.DataFrame(ws_fixed.get_all_records())
-    if not df_fixed.empty:
-        user_fixed = df_fixed[df_fixed['User'] == current_user]
-        st.write("### รายการที่ต้องจ่ายเดือนนี้")
-        edited_df = st.data_editor(user_fixed, num_rows="dynamic", key="fixed_editor")
-        
-        if st.button("อัปเดตสถานะการจ่าย (Sync)"):
-            # ในทางปฏิบัติ คุณริกสามารถเขียนฟังก์ชันวนลูปอัปเดต Current_Installment 
-            # ถ้า Status เปลี่ยนเป็น 'จ่ายแล้ว' และเพิ่มงวดให้เมื่อครบเดือน
-            st.info("ระบบกำลังบันทึกสถานะลง Sheets...")
-
-with t3:
-    st.subheader("สรุปงบประมาณ")
-    # ดึงข้อมูลจาก Sheets มาคำนวณกำไร-ขาดทุน รายเดือน/รายปี
-    st.write("ส่วนนี้จะดึงรายรับทั้งหมด ลบ รายจ่ายรายวัน และ รายจ่ายฟิกซ์ เพื่อสรุปยอดคงเหลือครับ")
+        # แสดงตารางพร้อมปุ่มดูสลิป
+        for i, row in user_records.iterrows():
+            with st.container():
+                c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+                c1.write(f"**{row['Date']}**")
+                c2.write(row['Item'])
+                c3.write(f"{row['Amount']:,.2f} บาท")
+                if row['Slip_Link']:
+                    c4.link_button("📄 ดูสลิป", row['Slip_Link'])
+                else:
+                    c4.write("➖")
+                st.divider()
