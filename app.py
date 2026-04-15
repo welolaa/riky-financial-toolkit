@@ -3,16 +3,11 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from googleapiclient.errors import HttpError
-import io
 
 # ==========================================
-# ⚙️ ส่วนตั้งค่า (คุณริกแก้ 2 จุดนี้ให้ตรงครับ)
+# ⚙️ ส่วนตั้งค่า
 # ==========================================
-SHEET_NAME = "Rik_Financial_App" 
-DRIVE_FOLDER_ID = "1z6AK_cQKN5P1Ue9-BNR_2eUXa_teNX5j" # ก๊อปปี้จาก URL โฟลเดอร์ใน Drive
+SHEET_NAME = "Rik_Financial_App" # ชื่อไฟล์ Google Sheets
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
 st.set_page_config(page_title="Rik & Mom Finance", layout="wide")
@@ -37,22 +32,19 @@ if st.sidebar.button("Log out"):
     st.session_state['user'] = None
     st.rerun()
 
-# --- 3. เชื่อมต่อ Google Services ---
+# --- 3. เชื่อมต่อเฉพาะ Google Sheets ---
 @st.cache_resource
-def init_services():
+def init_sheets():
     try:
         key_dict = st.secrets["gcp_service_account"]
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
-        sheet_client = gspread.authorize(creds)
-        drive_service = build('drive', 'v3', credentials=creds)
-        sh = sheet_client.open(SHEET_NAME) 
-        return sh, drive_service
+        return gspread.authorize(creds).open(SHEET_NAME)
     except Exception as e:
-        st.error(f"🚨 การเชื่อมต่อ Google ผิดพลาด: {e}")
-        return None, None
+        st.error(f"🚨 เชื่อมต่อ Sheets ผิดพลาด: {e}")
+        return None
 
-sh, drive_service = init_services()
+sh = init_sheets()
 
 # --- 4. จัดการ Worksheet ---
 def get_ws(name, headers):
@@ -62,6 +54,7 @@ def get_ws(name, headers):
         ws.append_row(headers)
         return ws
 
+# ยังคงคอลัมน์ Slip_Link ไว้ในโค้ด (แต่จะใส่เป็นค่าว่าง) เพื่อไม่ให้ Sheet เดิมของคุณริกเกิด Error
 ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current_Month", "Total_Months", "Type", "Status", "Slip_Link", "Note"])
 ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "Slip_Link", "Note"])
 
@@ -70,9 +63,8 @@ ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "S
 # ==========================================
 st.title(f"💰 Rik & Mom Financial System")
 
-tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายวัน", "⚙️ ตั้งค่ารายจ่ายประจำ", "📅 ติ๊กจ่าย & ตรวจสอบ"])
+tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายวัน", "⚙️ ตั้งค่ารายจ่ายประจำ", "📅 ติ๊กจ่ายเงิน"])
 
-# --- TAB 1: บันทึกรายวัน ---
 with tab1:
     st.subheader("บันทึกรายรับ-รายจ่ายทั่วไป")
     with st.form("daily_form", clear_on_submit=True):
@@ -83,24 +75,14 @@ with tab1:
             d_item = st.text_input("ชื่อรายการ")
         with col2:
             d_amt = st.number_input("จำนวนเงิน (บาท)", min_value=0.0)
-            d_file = st.file_uploader("แนบสลิป (ถ้ามี)", type=['png', 'jpg', 'jpeg'])
-        d_note = st.text_input("บันทึกเพิ่มเติม")
+            d_note = st.text_input("บันทึกเพิ่มเติม")
         
         if st.form_submit_button("บันทึกลงระบบ"):
-            slip_url = ""
-            if d_file:
-                try:
-                    file_name = f"{d_date}_{d_item}.png"
-                    media = MediaIoBaseUpload(io.BytesIO(d_file.read()), mimetype=d_file.type)
-                    file = drive_service.files().create(body={'name': file_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
-                    slip_url = file.get('webViewLink')
-                except Exception as e:
-                    st.error(f"🚨 อัปโหลดสลิปไม่สำเร็จ: {e}")
-            
-            ws_daily.append_row([current_user, str(d_date), d_type, d_item, d_amt, slip_url, d_note])
-            st.success("บันทึกเรียบร้อย!")
+            with st.spinner("กำลังบันทึกข้อมูล..."):
+                # ใส่ค่าว่าง "" แทนสลิป
+                ws_daily.append_row([current_user, str(d_date), d_type, d_item, d_amt, "", d_note])
+                st.success("บันทึกเรียบร้อย!")
 
-# --- TAB 2: ตั้งค่ารายจ่ายประจำ ---
 with tab2:
     st.subheader("เพิ่มรายการรายจ่ายประจำเดือน / หนี้")
     with st.form("fixed_form", clear_on_submit=True):
@@ -114,7 +96,6 @@ with tab2:
             st.success("เพิ่มรายการสำเร็จ!")
             st.cache_data.clear()
 
-# --- TAB 3: ติ๊กจ่ายเงิน ---
 with tab3:
     st.subheader("รายการที่ต้องจัดการเดือนนี้")
     fixed_data = pd.DataFrame(ws_fixed.get_all_records())
@@ -128,24 +109,9 @@ with tab3:
         
         if unpaid:
             pay_item = st.selectbox("เลือกรายการที่จะจ่าย", unpaid)
-            pay_file = st.file_uploader(f"แนบสลิปสำหรับ {pay_item} (ข้ามได้)", type=['png', 'jpg', 'jpeg'])
             
-            if st.button(f"✅ ยืนยันการจ่าย {pay_item}"):
+            if st.button(f"✅ ยืนยันการจ่าย '{pay_item}'"):
                 with st.spinner("กำลังอัปเดตระบบ..."):
-                    slip_url = ""
-                    # 1. จัดการไฟล์ใน Drive (ถ้ามี)
-                    if pay_file:
-                        try:
-                            t_str = datetime.today().strftime('%Y-%m-%d')
-                            f_name = f"{t_str}_{pay_item}.png"
-                            media = MediaIoBaseUpload(io.BytesIO(pay_file.read()), mimetype=pay_file.type)
-                            up_file = drive_service.files().create(body={'name': f_name, 'parents': [DRIVE_FOLDER_ID]}, media_body=media, fields='webViewLink').execute()
-                            slip_url = up_file.get('webViewLink')
-                        except HttpError as he:
-                            st.error(f"🚨 Google Drive Error: {he.content.decode('utf-8')}")
-                            st.stop()
-                    
-                    # 2. อัปเดต Google Sheets
                     try:
                         cell = ws_fixed.find(pay_item, in_column=2)
                         if cell:
@@ -154,9 +120,8 @@ with tab3:
                             tot = int(ws_fixed.cell(r, 5).value or 0)
                             
                             new_curr = curr + 1
-                            ws_fixed.update_cell(r, 4, new_curr) # อัปเดตงวด
-                            ws_fixed.update_cell(r, 7, "จ่ายแล้ว") # อัปเดตสถานะ
-                            if slip_url: ws_fixed.update_cell(r, 8, slip_url) # บันทึกลิงก์
+                            ws_fixed.update_cell(r, 4, new_curr)
+                            ws_fixed.update_cell(r, 7, "จ่ายแล้ว")
                             
                             st.success(f"บันทึกการจ่าย '{pay_item}' งวดที่ {new_curr} สำเร็จ!")
                             if tot > 0 and new_curr >= tot:
