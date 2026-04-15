@@ -33,16 +33,21 @@ if st.sidebar.button("Log out"):
     st.rerun()
 
 # --- 3. เชื่อมต่อเฉพาะ Google Sheets ---
+# --- 3. เชื่อมต่อเฉพาะ Google Sheets ---
 @st.cache_resource
 def init_sheets():
     try:
         key_dict = st.secrets["gcp_service_account"]
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        # 👇 คืนสิทธิ์ Google Drive ให้มันใช้ค้นหาชื่อไฟล์
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets", 
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
         return gspread.authorize(creds).open(SHEET_NAME)
     except Exception as e:
         st.error(f"🚨 เชื่อมต่อ Sheets ผิดพลาด: {e}")
-        return None
+        return Nonee
 
 sh = init_sheets()
 
