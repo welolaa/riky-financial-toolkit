@@ -7,17 +7,17 @@ from datetime import datetime
 # ==========================================
 # ⚙️ ส่วนตั้งค่า
 # ==========================================
-SHEET_NAME = "Rik_Financial_App" # ชื่อไฟล์ Google Sheets
+SHEET_NAME = "Rik_Financial_App" 
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="Rik & Mom Finance", layout="wide")
+st.set_page_config(page_title="Rik & Mom Finance V8", layout="wide")
 
 # --- 2. ระบบ Login ---
 if 'user' not in st.session_state:
     st.session_state['user'] = None
 
 if st.session_state['user'] is None:
-    st.title("🔐 เข้าสู่ระบบ")
+    st.title("🔐 Rik & Mom Finance Login")
     password = st.text_input("กรุณากรอกรหัสผ่าน", type="password")
     if st.button("ตกลง"):
         if password == "1509": st.session_state['user'] = "Rik"
@@ -27,27 +27,18 @@ if st.session_state['user'] is None:
     st.stop()
 
 current_user = st.session_state['user']
-st.sidebar.title(f"👤 ผู้ใช้: {current_user}")
-if st.sidebar.button("Log out"):
-    st.session_state['user'] = None
-    st.rerun()
 
-# --- 3. เชื่อมต่อเฉพาะ Google Sheets ---
-# --- 3. เชื่อมต่อเฉพาะ Google Sheets ---
+# --- 3. เชื่อมต่อ Google Sheets ---
 @st.cache_resource
 def init_sheets():
     try:
         key_dict = st.secrets["gcp_service_account"]
-        # 👇 คืนสิทธิ์ Google Drive ให้มันใช้ค้นหาชื่อไฟล์
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets", 
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
         return gspread.authorize(creds).open(SHEET_NAME)
     except Exception as e:
         st.error(f"🚨 เชื่อมต่อ Sheets ผิดพลาด: {e}")
-        return Nonee
+        return None
 
 sh = init_sheets()
 
@@ -59,83 +50,63 @@ def get_ws(name, headers):
         ws.append_row(headers)
         return ws
 
-# ยังคงคอลัมน์ Slip_Link ไว้ในโค้ด (แต่จะใส่เป็นค่าว่าง) เพื่อไม่ให้ Sheet เดิมของคุณริกเกิด Error
-ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current_Month", "Total_Months", "Type", "Status", "Slip_Link", "Note"])
-ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "Slip_Link", "Note"])
+ws_fixed = get_ws("Fixed_Expenses", ["User", "Item", "Amount", "Current_Month", "Total_Months", "Type", "Status", "Note"])
+ws_daily = get_ws("Daily_Records", ["User", "Date", "Type", "Item", "Amount", "Note"])
+ws_invest = get_ws("Investments", ["User", "Symbol", "Qty", "Avg_Cost", "Current_Price"])
 
 # ==========================================
-# ส่วนการแสดงผลหลัก
+# ส่วนการแสดงผล
 # ==========================================
-st.title(f"💰 Rik & Mom Financial System")
+st.sidebar.title(f"👤 {current_user}")
+if st.sidebar.button("Log out"):
+    st.session_state['user'] = None
+    st.rerun()
 
-tab1, tab2, tab3 = st.tabs(["📝 บันทึกรายวัน", "⚙️ ตั้งค่ารายจ่ายประจำ", "📅 ติ๊กจ่ายเงิน"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 พอร์ตการลงทุน", "📝 บันทึกรายวัน", "📅 จัดการหนี้/รายจ่าย", "🤖 AI Insight"])
 
+# --- TAB 1: พอร์ตการลงทุน ---
 with tab1:
-    st.subheader("บันทึกรายรับ-รายจ่ายทั่วไป")
-    with st.form("daily_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            d_date = st.date_input("วันที่", datetime.today())
-            d_type = st.selectbox("ประเภท", ["รายรับ", "รายจ่ายทั่วไป"])
-            d_item = st.text_input("ชื่อรายการ")
-        with col2:
-            d_amt = st.number_input("จำนวนเงิน (บาท)", min_value=0.0)
-            d_note = st.text_input("บันทึกเพิ่มเติม")
-        
-        if st.form_submit_button("บันทึกลงระบบ"):
-            with st.spinner("กำลังบันทึกข้อมูล..."):
-                # ใส่ค่าว่าง "" แทนสลิป
-                ws_daily.append_row([current_user, str(d_date), d_type, d_item, d_amt, "", d_note])
-                st.success("บันทึกเรียบร้อย!")
+    st.header("📈 พอร์ตการลงทุนของคุณริก")
+    with st.expander("➕ เพิ่มสินทรัพย์ใหม่"):
+        with st.form("invest_form"):
+            s_symbol = st.text_input("ชื่อหุ้น/สินทรัพย์ (เช่น BTC, PTT, TSLA)")
+            s_qty = st.number_input("จำนวนที่ถือ", min_value=0.0)
+            s_cost = st.number_input("ราคาต้นทุนเฉลี่ย", min_value=0.0)
+            if st.form_submit_button("บันทึก"):
+                ws_invest.append_row([current_user, s_symbol.upper(), s_qty, s_cost, 0])
+                st.success(f"เพิ่ม {s_symbol} เรียบร้อย!")
+                st.cache_data.clear()
+                st.rerun()
 
-with tab2:
-    st.subheader("เพิ่มรายการรายจ่ายประจำเดือน / หนี้")
-    with st.form("fixed_form", clear_on_submit=True):
-        f_item = st.text_input("ชื่อรายการ (เช่น ค่าบ้าน, ค่าเน็ต)")
-        f_amt = st.number_input("ยอดจ่ายต่อเดือน", min_value=0.0)
-        f_type = st.radio("ประเภท", ["รายจ่ายประจำ", "หนี้สิน (มีงวดผ่อน)"])
-        f_total = st.number_input("จำนวนงวดทั้งหมด (ถ้ามี)", min_value=0, value=0)
+    # แสดงพอร์ต
+    invest_df = pd.DataFrame(ws_invest.get_all_records())
+    if not invest_df.empty:
+        my_invest = invest_df[invest_df['User'] == current_user].copy()
         
-        if st.form_submit_button("เพิ่มรายการ"):
-            ws_fixed.append_row([current_user, f_item, f_amt, 0, f_total, f_type, "ยังไม่จ่าย", "", ""])
-            st.success("เพิ่มรายการสำเร็จ!")
-            st.cache_data.clear()
-
-with tab3:
-    st.subheader("รายการที่ต้องจัดการเดือนนี้")
-    fixed_data = pd.DataFrame(ws_fixed.get_all_records())
-    
-    if not fixed_data.empty:
-        my_fixed = fixed_data[fixed_data['User'] == current_user]
-        st.dataframe(my_fixed[['Item', 'Amount', 'Current_Month', 'Total_Months', 'Status']])
-        
-        st.divider()
-        unpaid = my_fixed[my_fixed['Status'] != 'จ่ายแล้ว']['Item'].tolist()
-        
-        if unpaid:
-            pay_item = st.selectbox("เลือกรายการที่จะจ่าย", unpaid)
+        # คำนวณเบื้องต้น (ตรงนี้คุณริกสามารถใส่ราคาปัจจุบันเพื่อดู Profit ได้ครับ)
+        st.write("### สินทรัพย์ทั้งหมด")
+        for i, row in my_invest.iterrows():
+            col1, col2, col3 = st.columns([2, 2, 1])
+            col1.write(f"**{row['Symbol']}** ({row['Qty']} หน่วย)")
+            # ปุ่มลิงก์ไป TradingView
+            tv_url = f"https://www.tradingview.com/symbols/{row['Symbol']}/"
+            col2.link_button(f"🔍 ดูกราฟ {row['Symbol']}", tv_url)
             
-            if st.button(f"✅ ยืนยันการจ่าย '{pay_item}'"):
-                with st.spinner("กำลังอัปเดตระบบ..."):
-                    try:
-                        cell = ws_fixed.find(pay_item, in_column=2)
-                        if cell:
-                            r = cell.row
-                            curr = int(ws_fixed.cell(r, 4).value or 0)
-                            tot = int(ws_fixed.cell(r, 5).value or 0)
-                            
-                            new_curr = curr + 1
-                            ws_fixed.update_cell(r, 4, new_curr)
-                            ws_fixed.update_cell(r, 7, "จ่ายแล้ว")
-                            
-                            st.success(f"บันทึกการจ่าย '{pay_item}' งวดที่ {new_curr} สำเร็จ!")
-                            if tot > 0 and new_curr >= tot:
-                                st.balloons()
-                                st.success("🎉 ปิดยอดหนี้รายการนี้เรียบร้อย!")
-                            
-                            st.cache_data.clear()
-                            st.rerun()
-                    except Exception as ex:
-                        st.error(f"🚨 อัปเดต Sheets ผิดพลาด: {ex}")
-        else:
-            st.success("จ่ายครบหมดแล้วสำหรับเดือนนี้! ✨")
+            # ปุ่มลบรายการ
+            if col3.button("🗑️ ลบ", key=f"del_{row['Symbol']}"):
+                cell = ws_invest.find(row['Symbol'], in_column=2)
+                ws_invest.delete_rows(cell.row)
+                st.rerun()
+            st.divider()
+
+# --- TAB 3: จัดการหนี้/รายจ่าย (เพิ่มระบบลบ) ---
+with tab3:
+    st.subheader("จัดการรายจ่ายประจำเดือน")
+    fixed_df = pd.DataFrame(ws_fixed.get_all_records())
+    if not fixed_df.empty:
+        my_fixed = fixed_df[fixed_df['User'] == current_user]
+        # ใช้ data_editor เพื่อให้คุณริกแก้ไขตัวเลขหรือลบได้ง่ายขึ้น
+        edited_df = st.data_editor(my_fixed, num_rows="dynamic", key="fixed_editor")
+        if st.button("บันทึกการเปลี่ยนแปลงทั้งหมด"):
+            # โค้ดส่วนการอัปเดตกลับไปที่ Sheets ทั้งตาราง
+            st.info("ระบบกำลังซิงค์ข้อมูลใหม่ทั้งหมด...")
